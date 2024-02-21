@@ -36,16 +36,28 @@ resource "aws_iam_role_policy" "karpenter_controller" {
 
 data "aws_iam_policy_document" "karpenter_controller" {
   statement {
-    sid    = "AllowScopedEC2InstanceActions"
+    sid    = "AllowScopedEC2InstanceAccessActions"
     effect = "Allow"
 
     # tfsec:ignore:aws-iam-no-policy-wildcards
     resources = [
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::image/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}::snapshot/*",
-      "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:spot-instances-request/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:security-group/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:subnet/*",
+    ]
+
+    actions = [
+      "ec2:RunInstances",
+      "ec2:CreateFleet",
+    ]
+  }
+  statement {
+    sid    = "AllowScopedEC2LaunchTemplateAccessActions"
+    effect = "Allow"
+
+    # tfsec:ignore:aws-iam-no-policy-wildcards
+    resources = [
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:launch-template/*",
     ]
 
@@ -53,6 +65,18 @@ data "aws_iam_policy_document" "karpenter_controller" {
       "ec2:RunInstances",
       "ec2:CreateFleet",
     ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_config.name}"
+      values   = ["owned"]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "aws:ResourceTag/karpenter.sh/nodepool"
+      values   = ["*"]
+    }
   }
 
   statement {
@@ -66,6 +90,7 @@ data "aws_iam_policy_document" "karpenter_controller" {
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:volume/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:network-interface/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:launch-template/*",
+      "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:spot-instances-request/*",
     ]
 
     actions = [
@@ -82,7 +107,7 @@ data "aws_iam_policy_document" "karpenter_controller" {
 
     condition {
       test     = "StringLike"
-      variable = "aws:RequestTag/karpenter.sh/provisioner-name"
+      variable = "aws:RequestTag/karpenter.sh/nodepool"
       values   = ["*"]
     }
   }
@@ -98,6 +123,7 @@ data "aws_iam_policy_document" "karpenter_controller" {
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:volume/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:network-interface/*",
       "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:launch-template/*",
+      "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:spot-instances-request/*",
     ]
 
     actions = ["ec2:CreateTags"]
@@ -121,13 +147,13 @@ data "aws_iam_policy_document" "karpenter_controller" {
 
     condition {
       test     = "StringLike"
-      variable = "aws:RequestTag/karpenter.sh/provisioner-name"
+      variable = "aws:RequestTag/karpenter.sh/nodepool"
       values   = ["*"]
     }
   }
 
   statement {
-    sid    = "AllowMachineMigrationTagging"
+    sid    = "AllowScopedResourceTagging"
     effect = "Allow"
     # tfsec:ignore:aws-iam-no-policy-wildcards
     resources = ["arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.name}:*:instance/*"]
@@ -140,14 +166,8 @@ data "aws_iam_policy_document" "karpenter_controller" {
     }
 
     condition {
-      test     = "StringEquals"
-      variable = "aws:RequestTag/karpenter.sh/managed-by"
-      values   = [var.cluster_config.name]
-    }
-
-    condition {
       test     = "StringLike"
-      variable = "aws:RequestTag/karpenter.sh/provisioner-name"
+      variable = "aws:ResourceTag/karpenter.sh/nodepool"
       values   = ["*"]
     }
 
@@ -156,8 +176,8 @@ data "aws_iam_policy_document" "karpenter_controller" {
       variable = "aws:TagKeys"
 
       values = [
-        "karpenter.sh/provisioner-name",
-        "karpenter.sh/managed-by",
+        "karpenter.sh/nodeclaim",
+        "Name",
       ]
     }
   }
@@ -185,7 +205,7 @@ data "aws_iam_policy_document" "karpenter_controller" {
 
     condition {
       test     = "StringLike"
-      variable = "aws:ResourceTag/karpenter.sh/provisioner-name"
+      variable = "aws:ResourceTag/karpenter.sh/nodepool"
       values   = ["*"]
     }
   }
@@ -252,6 +272,104 @@ data "aws_iam_policy_document" "karpenter_controller" {
       variable = "iam:PassedToService"
       values   = ["ec2.amazonaws.com"]
     }
+  }
+
+  statement {
+    sid       = "AllowScopedInstanceProfileCreationActions"
+    effect    = "Allow"
+    resources = ["*"]
+    actions   = ["iam:CreateInstanceProfile"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes.io/cluster/${var.cluster_config.name}"
+      values   = ["owned"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/topology.kubernetes.io/region"
+      values   = [data.aws_region.current.name]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass"
+      values   = ["*"]
+    }
+  }
+
+  statement {
+    sid       = "AllowScopedInstanceProfileTagActions"
+    effect    = "Allow"
+    resources = ["*"]
+    actions   = ["iam:TagInstanceProfile"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_config.name}"
+      values   = ["owned"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/topology.kubernetes.io/region"
+      values   = [data.aws_region.current.name]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/kubernetes.io/cluster/${var.cluster_config.name}"
+      values   = ["owned"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:RequestTag/topology.kubernetes.io/region"
+      values   = [data.aws_region.current.name]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass"
+      values   = ["*"]
+    }
+    condition {
+      test     = "StringLike"
+      variable = "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass"
+      values   = ["*"]
+    }
+  }
+
+  statement {
+    sid       = "AllowScopedInstanceProfileActions"
+    effect    = "Allow"
+    resources = ["*"]
+    actions = [
+      "iam:AddRoleToInstanceProfile",
+      "iam:RemoveRoleFromInstanceProfile",
+      "iam:DeleteInstanceProfile",
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_config.name}"
+      values   = ["owned"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/topology.kubernetes.io/region"
+      values   = [data.aws_region.current.name]
+    }
+
+    condition {
+      test     = "StringLike"
+      variable = "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass"
+      values   = ["*"]
+    }
+  }
+
+  statement {
+    sid       = "AllowInstanceProfileReadActions"
+    effect    = "Allow"
+    resources = ["*"]
+    actions   = ["iam:GetInstanceProfile"]
   }
 
   statement {
